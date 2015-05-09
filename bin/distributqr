@@ -1,0 +1,98 @@
+#!/usr/bin/env coffee
+## vim:ft=coffee
+# -*- mode:coffee -*-
+
+OptParse = require "optparse"
+Promise = (require "es6-promise").Promise
+childProcess = require "child_process"
+google = require "googleapis"
+urlshortener = google.urlshortener "v1"
+
+EXEC_SWITCHES = [
+    ["-e", "--expires [EXPIRES]", "Expires generated URL in second(s)."],
+    ["-r", "--region [REGION]", "Region of S3. Default value is 'ap-northeast-1'"]
+    ["-o", "--output [FILE_PATH]", "File path to output QR Code image file."]
+]
+
+parser = new OptParse.OptionParser EXEC_SWITCHES
+parser.banner = "Usage: distributqr bucket_name key_name [-e|-r|-o]"
+
+options = 
+    region: "ap-notrheast-1"
+    expires: -1
+    output: "./qrcode.eps"
+    bucket: ""
+    key: ""
+
+parser.filter "EXPIRES", (value) ->
+    parseInt value
+
+parser.filter "REGION", (value) ->
+    # TODO: 現存のS3アクセスポイントに合致しないと例外出すようにしたい
+    value
+
+parser.on "help", (opt, value) ->
+    console.log parser.toString()
+    process.exit 0
+
+parser.on "region", (opt, value) ->
+    options.region = value
+
+parser.on "expires", (opt, value) ->
+    options.expires = parseInt value
+
+parser.on "output", (opt, value) ->
+    options.output = value
+
+parser.on 2, (value) ->
+    options.bucket = value
+
+parser.on 3, (value) ->
+    options.key = value
+
+
+configAws = (env, options) ->
+    AWS = require "aws-sdk"
+    AWS.config.update
+        accessKeyId: env.AWS_ACCESS_KEY_ID
+        secretAccessKey: env.AWS_SECRET_ACCESS_KEY
+        region: options.region
+    AWS
+
+makeS3Option = (options) ->
+    o =
+        Bucket: options.bucket
+        Key:    options.key
+    o.Expires = options.expires if options.expires > 0
+    o
+
+
+getS3Url = (AWS, options) ->
+    s3 = new AWS.S3()
+    s3.getSignedUrl "getObject", makeS3Option(options)
+
+getShortenUrlPromise = (longUrl) ->
+    return new Promise (resolve, reject) ->
+        urlshortener.url.insert
+            resource:
+                longUrl: longUrl
+            key: process.env.GOOGLE_API_KEY
+        , (error, res, body) ->
+            reject error if error
+            resolve body.body.id
+
+
+makeQRCode = (shortenUrl, options) ->
+    childProcess.execSync "qrencode -t EPS -o #{options.output} #{shortenUrl}"
+
+pbCopy = (str) ->
+    proc = childProcess.spawn "pbcopy"
+    proc.stdin.write str
+    proc.stdin.end()
+
+parser.parse process.argv
+
+(getShortenUrlPromise getS3Url (configAws process.env, options), options).then (shortenUrl) ->
+    makeQRCode shortenUrl, options
+    pbCopy shortenUrl
+    console.log shortenUrl
